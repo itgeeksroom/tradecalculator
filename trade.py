@@ -41,26 +41,28 @@ def analyze_stock(ticker):
             }
 
         # --- Average Volume ---
-        avg_volume = data["Volume"].mean()
+        avg_volume = float(data["Volume"].mean())
         volume_pass = avg_volume > min_volume
 
-        # --- Realized Volatility (RV30) & Implied Volatility (IV30 mock) ---
+        # --- Realized Volatility (RV30) & Mock IV30 ---
         rv30 = data["Close"].pct_change().rolling(30).std() * np.sqrt(252)
-        iv30 = rv30 * 0.8  # Mock IV (approximation)
+        iv30 = rv30 * 0.8  # Mock implied volatility
 
-        rv30_last = rv30.dropna().iloc[-1:].values[0] if not rv30.dropna().empty else np.nan
-        iv30_last = iv30.dropna().iloc[-1:].values[0] if not iv30.dropna().empty else np.nan
-        iv_rv_ratio = iv30_last / rv30_last if rv30_last and not np.isnan(rv30_last) else np.nan
+        # Extract last valid scalar values safely
+        rv30_last = float(rv30.dropna().iloc[-1]) if not rv30.dropna().empty else np.nan
+        iv30_last = float(iv30.dropna().iloc[-1]) if not iv30.dropna().empty else np.nan
+
+        # Calculate IV/RV ratio safely
+        iv_rv_ratio = iv30_last / rv30_last if (not np.isnan(rv30_last) and rv30_last != 0) else np.nan
         iv_rv_pass = bool(iv_rv_ratio > 1) if not np.isnan(iv_rv_ratio) else False
 
         # --- Trend Slope (last 45 days) ---
+        slope_pass = False
         if len(data["Close"]) >= 45:
             recent_close = data["Close"].tail(45)
             x = np.arange(len(recent_close))
             slope = np.polyfit(x, recent_close, 1)[0]
             slope_pass = slope > 0
-        else:
-            slope_pass = False
 
         # --- Summary logic ---
         if np.isnan(iv_rv_ratio):
