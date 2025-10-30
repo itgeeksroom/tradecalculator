@@ -3,69 +3,76 @@ import yfinance as yf
 import numpy as np
 import pandas as pd
 
-# Streamlit page setup
-st.set_page_config(page_title="Stock Movement Scanner", layout="centered")
+# --- Streamlit Page Setup ---
+st.set_page_config(page_title="📊 Stock Movement Scanner", layout="centered")
 st.title("📊 US Stock Volatility & Trend Scanner")
 
-# --- Input field ---
-tickers_input = st.text_input(
-    "Enter stock symbols (comma separated):",
-    "TSLA, CZR, PYPL"
+# --- Sidebar Inputs ---
+st.sidebar.header("⚙️ Scanner Settings")
+
+tickers_input = st.sidebar.text_input(
+    "Enter stock symbols (comma separated):", "TSLA, AAPL, NVDA"
 )
 
+period = st.sidebar.selectbox("Data Period:", ["3mo", "6mo", "1y"], index=1)
+min_volume = st.sidebar.number_input("Minimum Avg Volume", value=2_000_000, step=500_000)
+show_chart = st.sidebar.checkbox("Show chart for selected ticker", value=True)
+
+# --- Parse tickers ---
 tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
+# --- Cached data fetch ---
+@st.cache_data(ttl=3600)
+def get_data(ticker, period):
+    """Fetch OHLCV data with caching."""
+    return yf.download(ticker, period=period, interval="1d", progress=False, auto_adjust=False)
+
+# --- Stock analysis function ---
 def analyze_stock(ticker):
     try:
-        # --- Download data safely ---
-        data = yf.download(ticker, period="6mo", interval="1d", progress=False, auto_adjust=False)
-
+        data = get_data(ticker, period)
         if data.empty:
             return {
                 "Ticker": ticker,
                 "Avg Volume": "❌ N/A",
                 "IV30/RV30": "❌ N/A",
                 "TS Slope": "❌ N/A",
-                "Summary": "No data available"
+                "Summary": "No data available",
             }
 
         # --- Average Volume ---
         avg_volume = data["Volume"].mean()
-        volume_pass = avg_volume > 2_000_000
+        volume_pass = avg_volume > min_volume
 
-        # --- Calculate RV30 & IV30 safely ---
+        # --- Realized Volatility (RV30) & Implied Volatility (IV30 mock) ---
         rv30 = data["Close"].pct_change().rolling(30).std() * np.sqrt(252)
-        iv30 = rv30 * 0.8  # Mock IV (simulated since real IV not in yfinance)
+        iv30 = rv30 * 0.8  # Mock IV (approximation)
 
-        # Get latest valid values safely
         rv30_last = rv30.dropna().iloc[-1:].values[0] if not rv30.dropna().empty else np.nan
         iv30_last = iv30.dropna().iloc[-1:].values[0] if not iv30.dropna().empty else np.nan
-
-        if not np.isnan(rv30_last) and rv30_last != 0:
-            iv_rv_ratio = iv30_last / rv30_last
-        else:
-            iv_rv_ratio = np.nan
-
+        iv_rv_ratio = iv30_last / rv30_last if rv30_last and not np.isnan(rv30_last) else np.nan
         iv_rv_pass = bool(iv_rv_ratio > 1) if not np.isnan(iv_rv_ratio) else False
 
-        # --- Trend slope 0→45 days ---
+        # --- Trend Slope (last 45 days) ---
         if len(data["Close"]) >= 45:
             recent_close = data["Close"].tail(45)
             x = np.arange(len(recent_close))
             slope = np.polyfit(x, recent_close, 1)[0]
-            slope_pass = bool(slope > 0)
+            slope_pass = slope > 0
         else:
             slope_pass = False
 
         # --- Summary logic ---
-        if not iv_rv_pass:
-            summary = f"{ticker} may not move much"
+        if np.isnan(iv_rv_ratio):
+            summary = f"{ticker} data insufficient"
+        elif iv_rv_ratio < 1:
+            summary = f"{ticker} low implied volatility"
         elif slope_pass and volume_pass:
-            summary = f"{ticker} showing bullish setup"
+            summary = f"{ticker} bullish momentum"
         elif not slope_pass and volume_pass:
-            summary = f"{ticker} showing bearish setup"
+            summary = f"{ticker} bearish pressure"
         else:
-            summary = f"{ticker} trend unclear"
+            summary = f"{ticker} sideways / uncertain"
 
         # --- Helper to format pass/fail ---
         def pf(val):
@@ -76,7 +83,7 @@ def analyze_stock(ticker):
             "Avg Volume": pf(volume_pass),
             "IV30/RV30": pf(iv_rv_pass),
             "TS Slope": pf(slope_pass),
-            "Summary": summary
+            "Summary": summary,
         }
 
     except Exception as e:
@@ -85,8 +92,40 @@ def analyze_stock(ticker):
             "Avg Volume": "❌ Error",
             "IV30/RV30": "❌ Error",
             "TS Slope": "❌ Error",
-            "Summary": f"Error: {e}"
+            "Summary": f"Error: {e}",
         }
 
 # --- Run button ---
-if st.button("Run Scanner"):
+if st.button("🔍 Run Scanner"):
+    with st.spinner("Fetching and analyzing data..."):
+        results = [analyze_stock(t) for t in tickers]
+        df = pd.DataFrame(results)
+
+        # --- Add color-coded signal ---
+        color_map = {
+            "bullish": "🟢",
+            "bearish": "🔴",
+            "uncertain": "🟡",
+            "low implied": "🔵",
+        }
+        df["Signal"] = df["Summary"].apply(
+            lambda s: next(
+                (emoji for key, emoji in color_map.items() if key in s.lower()), "⚪"
+            )
+        )
+
+        # --- Display results ---
+        st.dataframe(df, use_container_width=True)
+        st.success("✅ Scan complete!")
+
+        # --- Optional: View price chart ---
+        if show_chart:
+            selected_ticker = st.selectbox("📈 View chart for:", tickers)
+            if selected_ticker:
+                chart_data = get_data(selected_ticker, "3mo")
+                if not chart_data.empty:
+                    st.line_chart(chart_data["Close"])
+                else:
+                    st.warning("No chart data available for this ticker.")
+
+st.caption("Built with ❤️ using Streamlit & Yahoo Finance API")
